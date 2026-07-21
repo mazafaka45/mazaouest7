@@ -16,7 +16,10 @@ RUN go get github.com/chromedp/chromedp@v0.9.5 \
 ### Runtime stage: chromedp/headless-shell — a purpose-built, much lighter ###
 ### Chrome build than a full desktop Chromium install (what caused the      ###
 ### earlier out-of-memory crash on Render's free plan).                    ###
-FROM chromedp/headless-shell:latest
+### Pinned to an older Chrome version: chromedp v0.9.5's cdproto doesn't    ###
+### understand newer Chrome's "cookiePartitionKey" CDP fields, which shows ###
+### up as "could not unmarshal event" errors and connection instability.   ###
+FROM chromedp/headless-shell:113.0.5672.64
 
 # tini reaps zombie processes left behind by Chrome's subprocesses — the
 # chromedp/headless-shell image's own docs recommend this when you add your
