@@ -405,7 +405,7 @@ func newBrowserContext(cfg Config) (context.Context, context.CancelFunc, error) 
 	}
 	wsURL := base + "?token=" + url.QueryEscape(cfg.BrowserlessToken)
 
-	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(context.Background(), wsURL)
+	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(context.Background(), wsURL, chromedp.NoModifyURL)
 	ctx, cancelCtx := chromedp.NewContext(allocCtx)
 	return ctx, func() { cancelCtx(); cancelAlloc() }, nil
 }
