@@ -417,7 +417,11 @@ func newBrowserContext(cfg Config) (context.Context, context.CancelFunc, error) 
 		}
 		base = u.String()
 	}
-	wsURL := base + "?token=" + url.QueryEscape(cfg.BrowserlessToken)
+	// Browserless closes the session after its own internal timeout, which
+	// can be shorter than our local timeout — override it explicitly so it
+	// doesn't cut the session early (this showed up as "context canceled"
+	// with empty URL/title, i.e. the connection died mid-step).
+	wsURL := base + "?token=" + url.QueryEscape(cfg.BrowserlessToken) + "&timeout=120000"
 
 	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(context.Background(), wsURL, chromedp.NoModifyURL)
 	ctx, cancelCtx := chromedp.NewContext(allocCtx)
@@ -550,7 +554,7 @@ func main() {
 
 		// Hard cap on the whole browser step so a stuck page/selector can't
 		// hang the request forever — it'll fail fast with a clear error instead.
-		timedCtx, cancelTimeout := context.WithTimeout(bctx, 90*time.Second)
+		timedCtx, cancelTimeout := context.WithTimeout(bctx, 130*time.Second)
 		defer cancelTimeout()
 
 		if err := browserLogin(timedCtx, cfg); err != nil {
