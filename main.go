@@ -368,12 +368,19 @@ func browserLogin(ctx context.Context, cfg Config) error {
 func readScoringBadge(ctx context.Context, cfg Config, tracking string) (label string, level string, err error) {
 	ordersURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.OrdersPagePath
 
-	if err = chromedp.Run(ctx,
-		chromedp.Navigate(ordersURL),
-		chromedp.WaitVisible(`span[data-scoring-level]`, chromedp.ByQuery),
-		chromedp.Sleep(1500*time.Millisecond),
-	); err != nil {
-		return "", "", fmt.Errorf("navigate/wait orders page: %w", err)
+	if err = chromedp.Run(ctx, chromedp.Navigate(ordersURL)); err != nil {
+		return "", "", fmt.Errorf("navigate to orders page: %w", err)
+	}
+
+	if err = chromedp.Run(ctx, chromedp.WaitVisible(`span[data-scoring-level]`, chromedp.ByQuery)); err != nil {
+		var curURL, curTitle string
+		_ = chromedp.Run(ctx, chromedp.Location(&curURL))
+		_ = chromedp.Run(ctx, chromedp.Title(&curTitle))
+		return "", "", fmt.Errorf("waiting for scoring badge (landed on url=%q title=%q): %w", curURL, curTitle, err)
+	}
+
+	if err = chromedp.Run(ctx, chromedp.Sleep(1500*time.Millisecond)); err != nil {
+		return "", "", fmt.Errorf("post-load wait: %w", err)
 	}
 
 	// Prefer the badge inside the row that mentions this tracking number.
