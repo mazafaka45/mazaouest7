@@ -417,11 +417,10 @@ func newBrowserContext(cfg Config) (context.Context, context.CancelFunc, error) 
 		}
 		base = u.String()
 	}
-	// Browserless closes the session after its own internal timeout, which
-	// can be shorter than our local timeout — override it explicitly so it
-	// doesn't cut the session early (this showed up as "context canceled"
-	// with empty URL/title, i.e. the connection died mid-step).
-	wsURL := base + "?token=" + url.QueryEscape(cfg.BrowserlessToken) + "&timeout=120000"
+	// NOTE: Browserless's "&timeout=" override is only honoured on
+	// Enterprise/dedicated fleets — passing it on the free shared fleet
+	// gets the connection rejected outright (HTTP 400), so we don't send it.
+	wsURL := base + "?token=" + url.QueryEscape(cfg.BrowserlessToken)
 
 	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(context.Background(), wsURL, chromedp.NoModifyURL)
 	ctx, cancelCtx := chromedp.NewContext(allocCtx)
