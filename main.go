@@ -328,8 +328,17 @@ func updateOrderPhone(cfg Config, sess *session, formVals url.Values) error {
 // failure — died instantly too (a dead context stays dead). Giving each step
 // its own budget keeps diagnostics usable even when a previous step timed
 // out.
-func stepCtx(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, d)
+//
+// Deliberately NOT returning/calling an early cancel(): chromedp appears to
+// tie the browser tab's lifecycle to whichever context was first used to
+// drive it, so cancelling a short-lived per-step context as soon as that
+// step finishes was closing the tab out from under later steps (seen as
+// "context canceled" on the very next action). The parent browser context
+// (bctx in the handler) still gets cancelled exactly once, at the end of the
+// request, which cleans all of these up together.
+func stepCtx(parent context.Context, d time.Duration) context.Context {
+	ctx, _ := context.WithTimeout(parent, d)
+	return ctx
 }
 
 // browserLogin logs into Noest directly inside the remote browser (fills the
@@ -345,41 +354,30 @@ func stepCtx(parent context.Context, d time.Duration) (context.Context, context.
 func browserLogin(ctx context.Context, cfg Config) error {
 	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
 
-	navCtx, cancel := stepCtx(ctx, 20*time.Second)
-	defer cancel()
-	if err := chromedp.Run(navCtx, chromedp.Navigate(loginURL)); err != nil {
+	if err := chromedp.Run(stepCtx(ctx, 20*time.Second), chromedp.Navigate(loginURL)); err != nil {
 		return fmt.Errorf("navigate to login page: %w", err)
 	}
 
-	waitCtx, cancel2 := stepCtx(ctx, 20*time.Second)
-	defer cancel2()
-	if err := chromedp.Run(waitCtx, chromedp.WaitVisible(`input[name="email"]`, chromedp.ByQuery)); err != nil {
+	if err := chromedp.Run(stepCtx(ctx, 20*time.Second), chromedp.WaitVisible(`input[name="email"]`, chromedp.ByQuery)); err != nil {
 		var curURL, curTitle string
-		diagCtx, diagCancel := stepCtx(ctx, 5*time.Second)
+		diagCtx := stepCtx(ctx, 5*time.Second)
 		_ = chromedp.Run(diagCtx, chromedp.Location(&curURL))
 		_ = chromedp.Run(diagCtx, chromedp.Title(&curTitle))
-		diagCancel()
 		return fmt.Errorf("waiting for email field (landed on url=%q title=%q): %w", curURL, curTitle, err)
 	}
 
-	fillCtx, cancel3 := stepCtx(ctx, 10*time.Second)
-	defer cancel3()
-	if err := chromedp.Run(fillCtx,
+	if err := chromedp.Run(stepCtx(ctx, 10*time.Second),
 		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="password"]`, cfg.NoestPassword, chromedp.ByQuery),
 	); err != nil {
 		return fmt.Errorf("filling login form: %w", err)
 	}
 
-	subCtx, cancel4 := stepCtx(ctx, 15*time.Second)
-	defer cancel4()
-	if err := chromedp.Run(subCtx, chromedp.Submit(`input[name="password"]`, chromedp.ByQuery)); err != nil {
+	if err := chromedp.Run(stepCtx(ctx, 15*time.Second), chromedp.Submit(`input[name="password"]`, chromedp.ByQuery)); err != nil {
 		return fmt.Errorf("submitting login form: %w", err)
 	}
 
-	sleepCtx, cancel5 := stepCtx(ctx, 5*time.Second)
-	defer cancel5()
-	if err := chromedp.Run(sleepCtx, chromedp.Sleep(2500*time.Millisecond)); err != nil {
+	if err := chromedp.Run(stepCtx(ctx, 5*time.Second), chromedp.Sleep(2500*time.Millisecond)); err != nil {
 		return fmt.Errorf("post-submit wait: %w", err)
 	}
 	return nil
@@ -391,31 +389,23 @@ func browserLogin(ctx context.Context, cfg Config) error {
 func readScoringBadge(ctx context.Context, cfg Config, tracking string) (label string, level string, err error) {
 	ordersURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.OrdersPagePath
 
-	navCtx, cancel := stepCtx(ctx, 20*time.Second)
-	defer cancel()
-	if err = chromedp.Run(navCtx, chromedp.Navigate(ordersURL)); err != nil {
+	if err = chromedp.Run(stepCtx(ctx, 20*time.Second), chromedp.Navigate(ordersURL)); err != nil {
 		return "", "", fmt.Errorf("navigate to orders page: %w", err)
 	}
 
-	waitCtx, cancel2 := stepCtx(ctx, 20*time.Second)
-	defer cancel2()
-	if err = chromedp.Run(waitCtx, chromedp.WaitVisible(`span[data-scoring-level]`, chromedp.ByQuery)); err != nil {
+	if err = chromedp.Run(stepCtx(ctx, 20*time.Second), chromedp.WaitVisible(`span[data-scoring-level]`, chromedp.ByQuery)); err != nil {
 		var curURL, curTitle string
-		diagCtx, diagCancel := stepCtx(ctx, 5*time.Second)
+		diagCtx := stepCtx(ctx, 5*time.Second)
 		_ = chromedp.Run(diagCtx, chromedp.Location(&curURL))
 		_ = chromedp.Run(diagCtx, chromedp.Title(&curTitle))
-		diagCancel()
 		return "", "", fmt.Errorf("waiting for scoring badge (landed on url=%q title=%q): %w", curURL, curTitle, err)
 	}
 
-	sleepCtx, cancel3 := stepCtx(ctx, 5*time.Second)
-	defer cancel3()
-	if err = chromedp.Run(sleepCtx, chromedp.Sleep(1500*time.Millisecond)); err != nil {
+	if err = chromedp.Run(stepCtx(ctx, 5*time.Second), chromedp.Sleep(1500*time.Millisecond)); err != nil {
 		return "", "", fmt.Errorf("post-load wait: %w", err)
 	}
 
-	readCtx, cancel4 := stepCtx(ctx, 10*time.Second)
-	defer cancel4()
+	readCtx := stepCtx(ctx, 10*time.Second)
 
 	// Prefer the badge inside the row that mentions this tracking number.
 	rowSel := fmt.Sprintf(`//tr[.//*[contains(., %q)]]//span[@data-scoring-level]`, tracking)
