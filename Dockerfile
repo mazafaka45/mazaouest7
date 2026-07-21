@@ -22,7 +22,7 @@ FROM chromedp/headless-shell:latest
 # chromedp/headless-shell image's own docs recommend this when you add your
 # own program on top of it.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini \
+ && apt-get install -y --no-install-recommends tini curl \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
