@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
@@ -324,30 +323,20 @@ func updateOrderPhone(cfg Config, sess *session, formVals url.Values) error {
 
 // --------- Scoring badge reading (chromedp) ----------
 
-// pushCookiesToBrowser copies the cookies from the Go HTTP session's cookiejar
-// into the headless browser, so chromedp is already logged in.
-func pushCookiesToBrowser(ctx context.Context, jar http.CookieJar, base string) error {
-	u, err := url.Parse(base)
-	if err != nil {
-		return err
-	}
-	cookies := jar.Cookies(u)
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		if err := network.Enable().Do(ctx); err != nil {
-			return err
-		}
-		for _, ck := range cookies {
-			err := network.SetCookie(ck.Name, ck.Value).
-				WithDomain(u.Hostname()).
-				WithPath("/").
-				WithSecure(true).
-				Do(ctx)
-			if err != nil {
-				return fmt.Errorf("set cookie %s: %w", ck.Name, err)
-			}
-		}
-		return nil
-	}))
+// browserLogin logs into Noest directly inside the remote browser (fills the
+// real login form), instead of trying to transplant cookies from the Go HTTP
+// session — that transplant proved fragile (cookie attributes don't always
+// survive the trip, so Noest kept showing the login page instead of orders).
+func browserLogin(ctx context.Context, cfg Config) error {
+	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
+	return chromedp.Run(ctx,
+		chromedp.Navigate(loginURL),
+		chromedp.WaitVisible(`input[name="email"]`, chromedp.ByQuery),
+		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
+		chromedp.SendKeys(`input[name="password"]`, cfg.NoestPassword, chromedp.ByQuery),
+		chromedp.Submit(`input[name="password"]`, chromedp.ByQuery),
+		chromedp.Sleep(2500*time.Millisecond),
+	)
 }
 
 // readScoringBadge loads the orders page (already authenticated via cookies)
@@ -536,11 +525,11 @@ func main() {
 
 		// Hard cap on the whole browser step so a stuck page/selector can't
 		// hang the request forever — it'll fail fast with a clear error instead.
-		timedCtx, cancelTimeout := context.WithTimeout(bctx, 45*time.Second)
+		timedCtx, cancelTimeout := context.WithTimeout(bctx, 60*time.Second)
 		defer cancelTimeout()
 
-		if err := pushCookiesToBrowser(timedCtx, sess.client.Jar, cfg.UpstreamBase); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "browser cookie sync failed: " + err.Error(), "step": "scoring", "steps": steps})
+		if err := browserLogin(timedCtx, cfg); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "browser login failed: " + err.Error(), "step": "scoring", "steps": steps})
 			return
 		}
 
