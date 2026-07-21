@@ -327,16 +327,41 @@ func updateOrderPhone(cfg Config, sess *session, formVals url.Values) error {
 // real login form), instead of trying to transplant cookies from the Go HTTP
 // session — that transplant proved fragile (cookie attributes don't always
 // survive the trip, so Noest kept showing the login page instead of orders).
+//
+// Each step runs as its own chromedp.Run call and returns a distinct error,
+// so that if something hangs/fails we know exactly which step it was —
+// including, when the email field never appears, the URL/title actually
+// reached (helps tell "still loading" from "wrong selector" from "redirected
+// somewhere unexpected").
 func browserLogin(ctx context.Context, cfg Config) error {
 	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
-	return chromedp.Run(ctx,
-		chromedp.Navigate(loginURL),
-		chromedp.WaitVisible(`input[name="email"]`, chromedp.ByQuery),
+
+	if err := chromedp.Run(ctx, chromedp.Navigate(loginURL)); err != nil {
+		return fmt.Errorf("navigate to login page: %w", err)
+	}
+
+	if err := chromedp.Run(ctx, chromedp.WaitVisible(`input[name="email"]`, chromedp.ByQuery)); err != nil {
+		var curURL, curTitle string
+		_ = chromedp.Run(ctx, chromedp.Location(&curURL))
+		_ = chromedp.Run(ctx, chromedp.Title(&curTitle))
+		return fmt.Errorf("waiting for email field (landed on url=%q title=%q): %w", curURL, curTitle, err)
+	}
+
+	if err := chromedp.Run(ctx,
 		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="password"]`, cfg.NoestPassword, chromedp.ByQuery),
-		chromedp.Submit(`input[name="password"]`, chromedp.ByQuery),
-		chromedp.Sleep(2500*time.Millisecond),
-	)
+	); err != nil {
+		return fmt.Errorf("filling login form: %w", err)
+	}
+
+	if err := chromedp.Run(ctx, chromedp.Submit(`input[name="password"]`, chromedp.ByQuery)); err != nil {
+		return fmt.Errorf("submitting login form: %w", err)
+	}
+
+	if err := chromedp.Run(ctx, chromedp.Sleep(2500*time.Millisecond)); err != nil {
+		return fmt.Errorf("post-submit wait: %w", err)
+	}
+	return nil
 }
 
 // readScoringBadge loads the orders page (already authenticated via cookies)
@@ -525,7 +550,7 @@ func main() {
 
 		// Hard cap on the whole browser step so a stuck page/selector can't
 		// hang the request forever — it'll fail fast with a clear error instead.
-		timedCtx, cancelTimeout := context.WithTimeout(bctx, 60*time.Second)
+		timedCtx, cancelTimeout := context.WithTimeout(bctx, 90*time.Second)
 		defer cancelTimeout()
 
 		if err := browserLogin(timedCtx, cfg); err != nil {
