@@ -71,8 +71,7 @@ type Config struct {
 	OrderUpdatePath string
 	OrdersPagePath  string
 
-	BrowserlessWSURL string
-	BrowserlessToken string
+	ChromeDebugURL string
 }
 
 func getenv(k, def string) string {
@@ -113,8 +112,7 @@ func getConfig() Config {
 		OrderUpdatePath: getenv("ORDER_UPDATE_PATH", "/update/orders/info"),
 		OrdersPagePath:  getenv("ORDERS_PAGE_PATH", "/validation/orders"),
 
-		BrowserlessWSURL: getenv("BROWSERLESS_WS_URL", "wss://production-sfo.browserless.io"),
-		BrowserlessToken: os.Getenv("BROWSERLESS_TOKEN"),
+		ChromeDebugURL: getenv("CHROME_DEBUG_URL", "http://127.0.0.1:9222"),
 	}
 }
 
@@ -402,29 +400,15 @@ func readScoringBadge(ctx context.Context, cfg Config, tracking string) (label s
 	return label, level, nil
 }
 
-func newBrowserContext(cfg Config) (context.Context, context.CancelFunc, error) {
-	if cfg.BrowserlessToken == "" {
-		return nil, nil, errors.New("BROWSERLESS_TOKEN not set")
-	}
-	base := strings.TrimRight(cfg.BrowserlessWSURL, "/")
-	// chromedp.NewRemoteAllocator needs an explicit port; wss:// doesn't get
-	// an implicit 443 the way a plain browser connection would.
-	if u, perr := url.Parse(base); perr == nil && u.Port() == "" {
-		if u.Scheme == "wss" || u.Scheme == "https" {
-			u.Host = u.Host + ":443"
-		} else {
-			u.Host = u.Host + ":80"
-		}
-		base = u.String()
-	}
-	// NOTE: Browserless's "&timeout=" override is only honoured on
-	// Enterprise/dedicated fleets — passing it on the free shared fleet
-	// gets the connection rejected outright (HTTP 400), so we don't send it.
-	wsURL := base + "?token=" + url.QueryEscape(cfg.BrowserlessToken)
-
-	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(context.Background(), wsURL, chromedp.NoModifyURL)
+// newBrowserContext connects to the local headless-shell instance running in
+// the same container (started by start.sh before this Go binary launches).
+// Using chromedp's HTTP discovery here (not NoModifyURL) is correct — unlike
+// Browserless's shared-fleet gateway, a local Chrome DevTools endpoint really
+// does answer GET /json/version with proper JSON.
+func newBrowserContext(cfg Config) (context.Context, context.CancelFunc) {
+	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(context.Background(), cfg.ChromeDebugURL)
 	ctx, cancelCtx := chromedp.NewContext(allocCtx)
-	return ctx, func() { cancelCtx(); cancelAlloc() }, nil
+	return ctx, func() { cancelCtx(); cancelAlloc() }
 }
 
 // --------- Main server ----------
@@ -544,16 +528,13 @@ func main() {
 		}
 		steps.OrderUpdate = true
 
-		bctx, cancel, err := newBrowserContext(cfg)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "step": "scoring", "steps": steps})
-			return
-		}
+		bctx, cancel := newBrowserContext(cfg)
 		defer cancel()
 
 		// Hard cap on the whole browser step so a stuck page/selector can't
 		// hang the request forever — it'll fail fast with a clear error instead.
-		timedCtx, cancelTimeout := context.WithTimeout(bctx, 130*time.Second)
+		// Local browser, no external session cap, so this is generous headroom.
+		timedCtx, cancelTimeout := context.WithTimeout(bctx, 60*time.Second)
 		defer cancelTimeout()
 
 		if err := browserLogin(timedCtx, cfg); err != nil {

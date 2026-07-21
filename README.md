@@ -1,43 +1,44 @@
-# mazaouest4 — v3 (lecture du score via navigateur distant Browserless.io)
+# mazaouest — v4 (Chromium local léger, "headless-shell", plan Render Free)
 
 ## Architecture
 
-Noest a chiffré la réponse de son endpoint interne `/get/scoring` (déchiffrée
+Noest chiffre la réponse de son endpoint interne `/get/scoring` (déchiffrée
 seulement côté navigateur). Le login et la mise à jour du téléphone
-(`PUT /update/orders/info`) fonctionnent toujours normalement et n'ont pas changé.
+(`PUT /update/orders/info`) fonctionnent toujours normalement via HTTP direct
+et n'ont pas changé.
 
-Donc dans cette version :
-- Login + mise à jour du téléphone : HTTP direct, comme avant (`ensureSession`,
-  `updateOrderPhone`).
-- Lecture du score : le service Go se connecte à un **Chromium hébergé par
-  Browserless.io** (gratuit jusqu'à 1000 unités/mois) via websocket, au lieu
-  d'en lancer un localement. Ton service Render reste en Go pur, léger,
-  **compatible avec le plan Free**. Le navigateur distant charge
-  `/validation/orders` (avec les cookies de la session déjà connectée) et lit
-  l'attribut `data-scoring-label` du badge déjà déchiffré par le JS de Noest.
+Pour lire le score, on a testé deux approches avant celle-ci :
+1. Chromium complet dans Docker (Alpine) → a fait planter le plan Free par
+   manque de RAM.
+2. Navigateur distant Browserless.io (gratuit) → limité à 30 secondes de
+   session sur le plan gratuit, ce qui coupait le flux avant qu'il ait fini.
 
-## Mise en place de Browserless.io
+**Cette version** utilise `chromedp/headless-shell` — une version de Chrome
+spécifiquement allégée pour l'automatisation headless (pas de Chromium
+desktop complet), qui tourne **dans le même conteneur** que l'appli Go, sans
+dépendre d'un service externe ni de ses limites de temps. C'est beaucoup plus
+léger en RAM que l'installation Alpine précédente, avec de bonnes chances de
+tenir dans le plan Render **Free**.
 
-1. Crée un compte gratuit sur https://www.browserless.io
-2. Récupère ton **API token** dans leur dashboard
-3. Ajoute-le comme variable d'environnement sur Render : `BROWSERLESS_TOKEN`
-4. `BROWSERLESS_WS_URL` a une valeur par défaut (`wss://production-sfo.browserless.io`)
-   — à ajuster uniquement si Browserless te donne une autre région/URL dans
-   ton dashboard.
+Au démarrage du conteneur (`start.sh`) :
+1. `headless-shell` démarre en tâche de fond, en écoute uniquement sur
+   `127.0.0.1:9222` (pas exposé à l'extérieur du conteneur).
+2. L'appli Go démarre ensuite et s'y connecte pour chaque requête `/scoring`.
 
 ## Déploiement sur Render
 
-Retour à un déploiement **Go natif** (comme au tout début) :
-
-1. Remplace le contenu de ton repo par `main.go`, `go.mod`, `render.yaml`
-   de ce dossier (plus de `Dockerfile` à ce stade).
-2. Si ton service Render actuel est en Docker, recrée-le en type **Go** (ou
-   repars du service Go d'origine, `mazaouest4`) — l'environnement d'un
-   service existant ne peut pas être changé après coup sur Render.
-3. Variables d'environnement à définir : `NOEST_EMAIL`, `NOEST_PASSWORD`,
-   `API_BEARER`, `DEFAULT_TRACKING`, `BROWSERLESS_TOKEN`, etc. (voir ton
-   fichier `.env` existant, il reste valable + `BROWSERLESS_TOKEN` en plus).
-4. Plan **Free** suffit — il n'y a plus de Chromium local à faire tourner.
+1. Remplace le contenu de ton repo par `main.go`, `go.mod`, `Dockerfile`,
+   `start.sh`, `render.yaml` de ce dossier.
+2. Le service doit être en type **Docker** (comme `mazaouest5-2` ou
+   `mazaouest7` avant) — pas besoin de `CHROME_PATH`, `BROWSERLESS_TOKEN` ni
+   `BROWSERLESS_WS_URL` cette fois, retire-les s'ils sont encore configurés.
+3. Variables d'environnement à garder : `NOEST_EMAIL`, `NOEST_PASSWORD`,
+   `API_BEARER`, `DEFAULT_TRACKING`, `UPSTREAM_BASE`, `ALLOWED_ORIGIN`, etc.
+   (les mêmes que dans ton `.env` existant, moins celles de Browserless).
+4. Plan **Free** — à tester en premier ; si `/scoring` fait planter le
+   service par manque de mémoire malgré cette version plus légère, il faudra
+   passer sur **Starter**, mais c'est notre meilleure chance de rester
+   gratuit.
 
 ## Réponse de /scoring
 
@@ -54,9 +55,10 @@ Retour à un déploiement **Go natif** (comme au tout début) :
 
 ## Limites connues
 
-- Le free tier Browserless (1000 unités/mois, 2 sessions simultanées) doit
-  largement suffire pour un usage ponctuel — au-delà, ça passe en payant
-  (à partir de ~25$/mois).
-- Je n'ai pas d'accès réseau pour tester ce code en conditions réelles contre
-  Noest ni Browserless — si une erreur apparaît (le JSON `/scoring` inclut
-  toujours `steps` + `error` précis), colle-la-moi et je corrige.
+- Je n'ai pas d'accès réseau pour tester ce code en conditions réelles — si
+  une erreur apparaît (le JSON `/scoring` inclut toujours `steps` + `error`
+  précis pour localiser l'étape en cause), colle-la-moi et je corrige.
+- Si le service redémarre pour cause de mémoire (message Render identique à
+  celui vu précédemment), ce sera le signe que même cette version allégée ne
+  tient pas dans les ~512 Mo du plan Free — dans ce cas, Starter (~7$/mois)
+  restera la solution la plus fiable.

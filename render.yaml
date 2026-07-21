@@ -1,16 +1,9 @@
 services:
 - type: web
   name: noest-proxy
-  env: go
+  env: docker
+  dockerfilePath: ./Dockerfile
   plan: free
-  buildCommand: |
-    # Render often sets GOFLAGS='-mod=readonly'; clear it so tidy can write go.sum
-    # Pin chromedp to a version compatible with the Go toolchain Render provides
-    # ("latest" may require a newer Go than what's installed).
-    GOFLAGS= go get github.com/chromedp/chromedp@v0.9.5
-    GOFLAGS= go mod tidy
-    GOFLAGS= go build -tags netgo -ldflags '-s -w' -o app .
-  startCommand: ./app
   autoDeploy: true
   envVars:
   - key: UPSTREAM_BASE
@@ -27,7 +20,3 @@ services:
     sync: false
   - key: DEFAULT_ALT_PHONE
     sync: false
-  - key: BROWSERLESS_TOKEN
-    sync: false
-  - key: BROWSERLESS_WS_URL
-    value: wss://production-sfo.browserless.io
