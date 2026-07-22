@@ -12,7 +12,6 @@ echo "[start.sh] launching headless-shell..."
   --disable-gpu \
   --no-sandbox \
   --disable-setuid-sandbox \
-  --single-process \
   --disable-dev-shm-usage \
   --disable-extensions \
   --disable-background-networking \
