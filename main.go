@@ -380,6 +380,13 @@ func browserLogin(ctx context.Context, cfg Config) error {
 		return nil
 	})
 
+	var readyState string
+	var emailExists bool
+	logDOMState := chromedp.ActionFunc(func(context.Context) error {
+		log.Printf("[login] pre-click DOM state: readyState=%q emailInputExists=%v", readyState, emailExists)
+		return nil
+	})
+
 	err := runStep(stepCtx(ctx, 45*time.Second), "login_full_flow",
 		// Check whatever page/tab state we're starting from (still inside
 		// this one Run call) — tests the "stale tab from a previous
@@ -392,6 +399,14 @@ func browserLogin(ctx context.Context, cfg Config) error {
 		mark("navigated"),
 		chromedp.Sleep(4*time.Second),
 		mark("post-navigate sleep done"),
+		// Confirm the DOM is actually ready and the field genuinely exists
+		// (via plain JS evaluation, not chromedp's own node-resolution
+		// machinery) right before the point where Click has been hanging —
+		// tells us whether the page itself is the problem or whether it's
+		// specifically chromedp's Click/SendKeys command handling.
+		chromedp.Evaluate(`document.readyState`, &readyState),
+		chromedp.Evaluate(`!!document.querySelector('input[name="email"]')`, &emailExists),
+		logDOMState,
 		chromedp.Click(`input[name="email"]`, chromedp.ByQuery),
 		mark("email clicked"),
 		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
