@@ -494,6 +494,49 @@ func main() {
 		c.Data(resp.StatusCode, "application/json", body)
 	})
 
+	// TEMPORARY diagnostic route — actually screenshots whatever page Chrome
+	// lands on after navigating to the login page and waiting a few seconds.
+	// Lets us literally see what's being rendered (e.g. a bot-detection
+	// interstitial that never resolves) instead of guessing from error text.
+	// Remove once things are stable.
+	r.GET("/debug-login-shot", func(c *gin.Context) {
+		bctx, cancel := newBrowserContext(cfg)
+		defer cancel()
+
+		loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
+		var buf []byte
+		var curURL, curTitle, htmlSrc string
+
+		shotCtx, shotCancel := context.WithTimeout(bctx, 30*time.Second)
+		defer shotCancel()
+
+		err := chromedp.Run(shotCtx,
+			chromedp.Navigate(loginURL),
+			chromedp.Sleep(6*time.Second), // let any JS challenge/render finish
+			chromedp.Location(&curURL),
+			chromedp.Title(&curTitle),
+			chromedp.OuterHTML("html", &htmlSrc),
+			chromedp.CaptureScreenshot(&buf),
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": err.Error(), "url": curURL, "title": curTitle,
+			})
+			return
+		}
+
+		if c.Query("html") == "1" {
+			c.Header("X-Landed-URL", curURL)
+			c.Header("X-Landed-Title", curTitle)
+			c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(htmlSrc))
+			return
+		}
+
+		c.Header("X-Landed-URL", curURL)
+		c.Header("X-Landed-Title", curTitle)
+		c.Data(http.StatusOK, "image/png", buf)
+	})
+
 	r.Use(func(c *gin.Context) {
 		if cfg.APIBearer == "" {
 			return
