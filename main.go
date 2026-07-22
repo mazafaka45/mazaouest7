@@ -477,6 +477,23 @@ func main() {
 		c.Next()
 	})
 
+	// TEMPORARY diagnostic route — registered before the bearer middleware
+	// below, so it's NOT auth-protected (Gin only attaches middlewares
+	// registered via r.Use() so far to routes declared after them). Checks
+	// whether the local headless-shell instance is actually reachable,
+	// independent of any of our own chromedp/login logic.
+	// Remove this route once things are stable.
+	r.GET("/chrome", func(c *gin.Context) {
+		resp, err := http.Get(cfg.ChromeDebugURL + "/json/version")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		c.Data(resp.StatusCode, "application/json", body)
+	})
+
 	r.Use(func(c *gin.Context) {
 		if cfg.APIBearer == "" {
 			return
@@ -501,20 +518,6 @@ func main() {
 	r.Use(rateLimit(*rate.NewLimiter(5, 20)))
 
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
-
-	// TEMPORARY diagnostic route — checks whether the local headless-shell
-	// instance is actually reachable and reports its own state, independent
-	// of any of our own chromedp/login logic. Remove once things are stable.
-	r.GET("/chrome", func(c *gin.Context) {
-		resp, err := http.Get(cfg.ChromeDebugURL + "/json/version")
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		c.Data(resp.StatusCode, "application/json", body)
-	})
 
 	r.GET("/scoring", func(c *gin.Context) {
 		type Steps struct {
