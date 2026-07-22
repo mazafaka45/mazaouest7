@@ -390,77 +390,97 @@ func runStep(ctx context.Context, label string, actions ...chromedp.Action) erro
 // Everything MUST run inside a SINGLE chromedp.Run call — confirmed twice
 // now: splitting the flow into several separate Run calls on a shared
 // remote context (even a tiny extra Location/Title check before the main
-// flow) reliably produces "context canceled" a few seconds in. To still see
-// exactly which sub-step a hang happens at, tiny logging actions are
-// interleaved between the real ones inside that one Run call.
+// flow) reliably produces "context canceled" a few seconds in.
+//
+// Chrome's browser profile (cookies/session) persists across requests even
+// though each request gets a fresh tab — confirmed via /debug-last-shot:
+// on later requests, Navigate(loginURL) lands straight on /home because
+// Noest's own session cookie is still valid, so there's no email/password
+// form on the page at all. The fix is to detect that case (via a plain JS
+// existence check, run from *inside* the single Run call so we can branch
+// without a second Run) and skip straight past the fill/submit steps.
 func browserLogin(ctx context.Context, cfg Config) error {
 	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
 
-	mark := func(label string) chromedp.Action {
-		return chromedp.ActionFunc(func(context.Context) error {
-			log.Printf("[login] reached: %s", label)
-			return nil
-		})
-	}
-
-	var startURL, startTitle string
-	logStart := chromedp.ActionFunc(func(context.Context) error {
+	// One big ActionFunc so we can branch in real Go code (if/return) while
+	// still executing entirely within the one outer chromedp.Run call —
+	// calling .Do(ctx) directly on sub-actions is equivalent to what
+	// chromedp.Run does internally, just without starting a second, separate
+	// Run.
+	flow := chromedp.ActionFunc(func(ctx context.Context) error {
+		var startURL, startTitle string
+		_ = chromedp.Location(&startURL).Do(ctx)
+		_ = chromedp.Title(&startTitle).Do(ctx)
 		log.Printf("[login] starting tab state: url=%q title=%q", startURL, startTitle)
-		return nil
-	})
 
-	var readyState string
-	var emailExists bool
-	var curURL, curTitle, bodyText string
-	var shot []byte
-	captureState := chromedp.ActionFunc(func(context.Context) error {
-		log.Printf("[login] pre-click DOM state: readyState=%q emailInputExists=%v url=%q title=%q", readyState, emailExists, curURL, curTitle)
-		snippet := bodyText
-		if len(snippet) > 500 {
-			snippet = snippet[:500]
+		if err := chromedp.Navigate(loginURL).Do(ctx); err != nil {
+			return fmt.Errorf("navigate: %w", err)
 		}
-		log.Printf("[login] pre-click body text (first 500 chars): %s", snippet)
+		log.Printf("[login] reached: navigated")
+
+		if err := chromedp.Sleep(4 * time.Second).Do(ctx); err != nil {
+			return fmt.Errorf("post-navigate sleep: %w", err)
+		}
+		log.Printf("[login] reached: post-navigate sleep done")
+
+		var emailExists bool
+		_ = chromedp.Evaluate(`!!document.querySelector('input[name="email"]')`, &emailExists).Do(ctx)
+
+		var curURL, curTitle, bodyText string
+		var shot []byte
+		_ = chromedp.Location(&curURL).Do(ctx)
+		_ = chromedp.Title(&curTitle).Do(ctx)
+		_ = chromedp.Text("body", &bodyText, chromedp.ByQuery).Do(ctx)
+		_ = chromedp.CaptureScreenshot(&shot).Do(ctx)
+		log.Printf("[login] state after navigate: emailInputExists=%v url=%q title=%q", emailExists, curURL, curTitle)
+		snippet := bodyText
+		if len(snippet) > 300 {
+			snippet = snippet[:300]
+		}
+		log.Printf("[login] body text (first 300 chars): %s", snippet)
 		debugCapture.store(curURL, curTitle, bodyText, shot)
+
+		if !emailExists {
+			// Chrome's shared profile already has a valid Noest session
+			// cookie from an earlier request — Navigate redirected straight
+			// to /home, there's no login form to fill. Nothing more to do.
+			log.Printf("[login] already authenticated (no login form present) — skipping fill/submit")
+			return nil
+		}
+
+		if err := chromedp.Click(`input[name="email"]`, chromedp.ByQuery).Do(ctx); err != nil {
+			return fmt.Errorf("click email: %w", err)
+		}
+		log.Printf("[login] reached: email clicked")
+
+		if err := chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery).Do(ctx); err != nil {
+			return fmt.Errorf("fill email: %w", err)
+		}
+		log.Printf("[login] reached: email filled")
+
+		if err := chromedp.Click(`input[name="password"]`, chromedp.ByQuery).Do(ctx); err != nil {
+			return fmt.Errorf("click password: %w", err)
+		}
+		log.Printf("[login] reached: password clicked")
+
+		if err := chromedp.SendKeys(`input[name="password"]`, cfg.NoestPassword, chromedp.ByQuery).Do(ctx); err != nil {
+			return fmt.Errorf("fill password: %w", err)
+		}
+		log.Printf("[login] reached: password filled")
+
+		if err := chromedp.Submit(`input[name="password"]`, chromedp.ByQuery).Do(ctx); err != nil {
+			return fmt.Errorf("submit: %w", err)
+		}
+		log.Printf("[login] reached: submitted")
+
+		if err := chromedp.Sleep(2500 * time.Millisecond).Do(ctx); err != nil {
+			return fmt.Errorf("post-submit sleep: %w", err)
+		}
+		log.Printf("[login] reached: post-submit sleep done")
 		return nil
 	})
 
-	err := runStep(stepCtx(ctx, 45*time.Second), "login_full_flow",
-		// Check whatever page/tab state we're starting from (still inside
-		// this one Run call) — tests the "stale tab from a previous
-		// request" theory without reintroducing a second Run call.
-		chromedp.Location(&startURL),
-		chromedp.Title(&startTitle),
-		logStart,
-		mark("before navigate"),
-		chromedp.Navigate(loginURL),
-		mark("navigated"),
-		chromedp.Sleep(4*time.Second),
-		mark("post-navigate sleep done"),
-		// Confirm the DOM is actually ready and the field genuinely exists
-		// (via plain JS evaluation, not chromedp's own node-resolution
-		// machinery) right before the point where Click has been hanging —
-		// tells us whether the page itself is the problem or whether it's
-		// specifically chromedp's Click/SendKeys command handling.
-		chromedp.Evaluate(`document.readyState`, &readyState),
-		chromedp.Evaluate(`!!document.querySelector('input[name="email"]')`, &emailExists),
-		chromedp.Location(&curURL),
-		chromedp.Title(&curTitle),
-		chromedp.Text("body", &bodyText, chromedp.ByQuery),
-		chromedp.CaptureScreenshot(&shot),
-		captureState,
-		chromedp.Click(`input[name="email"]`, chromedp.ByQuery),
-		mark("email clicked"),
-		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
-		mark("email filled"),
-		chromedp.Click(`input[name="password"]`, chromedp.ByQuery),
-		mark("password clicked"),
-		chromedp.SendKeys(`input[name="password"]`, cfg.NoestPassword, chromedp.ByQuery),
-		mark("password filled"),
-		chromedp.Submit(`input[name="password"]`, chromedp.ByQuery),
-		mark("submitted"),
-		chromedp.Sleep(2500*time.Millisecond),
-		mark("post-submit sleep done"),
-	)
+	err := runStep(stepCtx(ctx, 45*time.Second), "login_full_flow", flow)
 	if err != nil {
 		return fmt.Errorf("login flow: %w", err)
 	}
