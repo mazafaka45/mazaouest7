@@ -358,11 +358,12 @@ func runStep(ctx context.Context, label string, actions ...chromedp.Action) erro
 // session — that transplant proved fragile (cookie attributes don't always
 // survive the trip, so Noest kept showing the login page instead of orders).
 //
-// Everything runs inside a SINGLE chromedp.Run call (splitting it into
-// several separate Run calls on a shared remote context previously caused
-// "context canceled" failures). To still see exactly which sub-step a hang
-// happens at, tiny logging actions are interleaved between the real ones —
-// same single Run call, but a granular timeline in the logs.
+// Everything MUST run inside a SINGLE chromedp.Run call — confirmed twice
+// now: splitting the flow into several separate Run calls on a shared
+// remote context (even a tiny extra Location/Title check before the main
+// flow) reliably produces "context canceled" a few seconds in. To still see
+// exactly which sub-step a hang happens at, tiny logging actions are
+// interleaved between the real ones inside that one Run call.
 func browserLogin(ctx context.Context, cfg Config) error {
 	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
 
@@ -373,18 +374,19 @@ func browserLogin(ctx context.Context, cfg Config) error {
 		})
 	}
 
-	// Log whatever page/tab state we're starting from — checks the
-	// "stale tab from a previous request" theory (Chrome's remote
-	// debugging session isn't restarted between requests, only the tab
-	// chromedp.NewContext creates is supposed to be fresh each time).
 	var startURL, startTitle string
-	_ = chromedp.Run(stepCtx(ctx, 5*time.Second),
+	logStart := chromedp.ActionFunc(func(context.Context) error {
+		log.Printf("[login] starting tab state: url=%q title=%q", startURL, startTitle)
+		return nil
+	})
+
+	err := runStep(stepCtx(ctx, 45*time.Second), "login_full_flow",
+		// Check whatever page/tab state we're starting from (still inside
+		// this one Run call) — tests the "stale tab from a previous
+		// request" theory without reintroducing a second Run call.
 		chromedp.Location(&startURL),
 		chromedp.Title(&startTitle),
-	)
-	log.Printf("[login] starting tab state: url=%q title=%q", startURL, startTitle)
-
-	err := runStep(stepCtx(ctx, 90*time.Second), "login_full_flow",
+		logStart,
 		mark("before navigate"),
 		chromedp.Navigate(loginURL),
 		mark("navigated"),
