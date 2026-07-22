@@ -368,7 +368,7 @@ func runStep(ctx context.Context, label string, actions ...chromedp.Action) erro
 func browserLogin(ctx context.Context, cfg Config) error {
 	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
 
-	err := runStep(stepCtx(ctx, 45*time.Second), "login_full_flow",
+	err := runStep(stepCtx(ctx, 90*time.Second), "login_full_flow",
 		chromedp.Navigate(loginURL),
 		chromedp.Sleep(4*time.Second),
 		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
