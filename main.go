@@ -501,7 +501,7 @@ func readScoringBadge(ctx context.Context, cfg Config, tracking string) (label s
 		return "", "", fmt.Errorf("navigate to orders page: %w", err)
 	}
 
-	readCtx := stepCtx(ctx, 10*time.Second)
+	readCtx := stepCtx(ctx, 20*time.Second)
 
 	// Prefer the badge inside the row that mentions this tracking number.
 	rowSel := fmt.Sprintf(`//tr[.//*[contains(., %q)]]//span[@data-scoring-level]`, tracking)
