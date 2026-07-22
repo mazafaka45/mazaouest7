@@ -368,7 +368,7 @@ func runStep(ctx context.Context, label string, actions ...chromedp.Action) erro
 func browserLogin(ctx context.Context, cfg Config) error {
 	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
 
-	err := runStep(stepCtx(ctx, 30*time.Second), "login_full_flow",
+	err := runStep(stepCtx(ctx, 45*time.Second), "login_full_flow",
 		chromedp.Navigate(loginURL),
 		chromedp.Sleep(4*time.Second),
 		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
@@ -388,7 +388,7 @@ func browserLogin(ctx context.Context, cfg Config) error {
 func readScoringBadge(ctx context.Context, cfg Config, tracking string) (label string, level string, err error) {
 	ordersURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.OrdersPagePath
 
-	if err = runStep(stepCtx(ctx, 20*time.Second), "orders_navigate",
+	if err = runStep(stepCtx(ctx, 30*time.Second), "orders_navigate",
 		chromedp.Navigate(ordersURL),
 		chromedp.Sleep(4*time.Second),
 		chromedp.Sleep(1500*time.Millisecond),
