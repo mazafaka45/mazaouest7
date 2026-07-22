@@ -358,23 +358,46 @@ func runStep(ctx context.Context, label string, actions ...chromedp.Action) erro
 // session — that transplant proved fragile (cookie attributes don't always
 // survive the trip, so Noest kept showing the login page instead of orders).
 //
-// Everything runs inside a SINGLE chromedp.Run call now. Logged timings
-// showed the failure consistently happening well inside each step's own
-// timeout (e.g. "login_fill" cancelled after ~5s of its own 10s budget),
-// with ctxErr=context.Canceled rather than DeadlineExceeded — pointing at
-// something tied to the boundary between separate chromedp.Run calls on a
-// shared remote context, not a plain timeout. Testing whether keeping the
-// whole login flow inside one Run avoids that.
+// Everything runs inside a SINGLE chromedp.Run call (splitting it into
+// several separate Run calls on a shared remote context previously caused
+// "context canceled" failures). To still see exactly which sub-step a hang
+// happens at, tiny logging actions are interleaved between the real ones —
+// same single Run call, but a granular timeline in the logs.
 func browserLogin(ctx context.Context, cfg Config) error {
 	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
 
+	mark := func(label string) chromedp.Action {
+		return chromedp.ActionFunc(func(context.Context) error {
+			log.Printf("[login] reached: %s", label)
+			return nil
+		})
+	}
+
+	// Log whatever page/tab state we're starting from — checks the
+	// "stale tab from a previous request" theory (Chrome's remote
+	// debugging session isn't restarted between requests, only the tab
+	// chromedp.NewContext creates is supposed to be fresh each time).
+	var startURL, startTitle string
+	_ = chromedp.Run(stepCtx(ctx, 5*time.Second),
+		chromedp.Location(&startURL),
+		chromedp.Title(&startTitle),
+	)
+	log.Printf("[login] starting tab state: url=%q title=%q", startURL, startTitle)
+
 	err := runStep(stepCtx(ctx, 90*time.Second), "login_full_flow",
+		mark("before navigate"),
 		chromedp.Navigate(loginURL),
+		mark("navigated"),
 		chromedp.Sleep(4*time.Second),
+		mark("post-navigate sleep done"),
 		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
+		mark("email filled"),
 		chromedp.SendKeys(`input[name="password"]`, cfg.NoestPassword, chromedp.ByQuery),
+		mark("password filled"),
 		chromedp.Submit(`input[name="password"]`, chromedp.ByQuery),
+		mark("submitted"),
 		chromedp.Sleep(2500*time.Millisecond),
+		mark("post-submit sleep done"),
 	)
 	if err != nil {
 		return fmt.Errorf("login flow: %w", err)
