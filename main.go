@@ -502,6 +502,20 @@ func main() {
 
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
 
+	// TEMPORARY diagnostic route — checks whether the local headless-shell
+	// instance is actually reachable and reports its own state, independent
+	// of any of our own chromedp/login logic. Remove once things are stable.
+	r.GET("/chrome", func(c *gin.Context) {
+		resp, err := http.Get(cfg.ChromeDebugURL + "/json/version")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		c.Data(resp.StatusCode, "application/json", body)
+	})
+
 	r.GET("/scoring", func(c *gin.Context) {
 		type Steps struct {
 			Login       bool `json:"login"`
