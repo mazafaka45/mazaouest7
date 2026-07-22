@@ -354,16 +354,16 @@ func stepCtx(parent context.Context, d time.Duration) context.Context {
 func browserLogin(ctx context.Context, cfg Config) error {
 	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
 
-	if err := chromedp.Run(stepCtx(ctx, 20*time.Second), chromedp.Navigate(loginURL)); err != nil {
+	// WaitVisible's internal polling turned out to be the actual culprit
+	// (confirmed via /debug-login-shot: the exact same page, with the exact
+	// same selector, renders correctly and quickly with a plain Navigate +
+	// Sleep — WaitVisible was the only thing that never returned). Using
+	// that proven-working approach here instead.
+	if err := chromedp.Run(stepCtx(ctx, 15*time.Second),
+		chromedp.Navigate(loginURL),
+		chromedp.Sleep(4*time.Second),
+	); err != nil {
 		return fmt.Errorf("navigate to login page: %w", err)
-	}
-
-	if err := chromedp.Run(stepCtx(ctx, 20*time.Second), chromedp.WaitVisible(`input[name="email"]`, chromedp.ByQuery)); err != nil {
-		var curURL, curTitle string
-		diagCtx := stepCtx(ctx, 5*time.Second)
-		_ = chromedp.Run(diagCtx, chromedp.Location(&curURL))
-		_ = chromedp.Run(diagCtx, chromedp.Title(&curTitle))
-		return fmt.Errorf("waiting for email field (landed on url=%q title=%q): %w", curURL, curTitle, err)
 	}
 
 	if err := chromedp.Run(stepCtx(ctx, 10*time.Second),
@@ -389,16 +389,11 @@ func browserLogin(ctx context.Context, cfg Config) error {
 func readScoringBadge(ctx context.Context, cfg Config, tracking string) (label string, level string, err error) {
 	ordersURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.OrdersPagePath
 
-	if err = chromedp.Run(stepCtx(ctx, 20*time.Second), chromedp.Navigate(ordersURL)); err != nil {
+	if err = chromedp.Run(stepCtx(ctx, 15*time.Second),
+		chromedp.Navigate(ordersURL),
+		chromedp.Sleep(4*time.Second),
+	); err != nil {
 		return "", "", fmt.Errorf("navigate to orders page: %w", err)
-	}
-
-	if err = chromedp.Run(stepCtx(ctx, 20*time.Second), chromedp.WaitVisible(`span[data-scoring-level]`, chromedp.ByQuery)); err != nil {
-		var curURL, curTitle string
-		diagCtx := stepCtx(ctx, 5*time.Second)
-		_ = chromedp.Run(diagCtx, chromedp.Location(&curURL))
-		_ = chromedp.Run(diagCtx, chromedp.Title(&curTitle))
-		return "", "", fmt.Errorf("waiting for scoring badge (landed on url=%q title=%q): %w", curURL, curTitle, err)
 	}
 
 	if err = chromedp.Run(stepCtx(ctx, 5*time.Second), chromedp.Sleep(1500*time.Millisecond)); err != nil {
