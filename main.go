@@ -15,6 +15,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -204,6 +205,34 @@ type session struct {
 
 var cached *session
 
+// TEMPORARY diagnostic storage — captures whatever page Chrome actually
+// sees right before the point where Click/SendKeys has been hanging, so we
+// can inspect it after the fact via /debug-last-shot instead of guessing.
+// Remove once things are stable.
+type lastCapture struct {
+	mu        sync.Mutex
+	url       string
+	title     string
+	bodyText  string
+	png       []byte
+	capturedAt time.Time
+}
+
+var debugCapture lastCapture
+
+func (c *lastCapture) store(url, title, bodyText string, png []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.url, c.title, c.bodyText, c.png = url, title, bodyText, png
+	c.capturedAt = time.Now()
+}
+
+func (c *lastCapture) load() (url, title, bodyText string, png []byte, capturedAt time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.url, c.title, c.bodyText, c.png, c.capturedAt
+}
+
 func ensureSession(cfg Config) (*session, bool, bool, error) {
 	if cached != nil && time.Now().Before(cached.expiresAt.Add(-5*time.Minute)) {
 		return cached, true, true, nil
@@ -382,8 +411,16 @@ func browserLogin(ctx context.Context, cfg Config) error {
 
 	var readyState string
 	var emailExists bool
-	logDOMState := chromedp.ActionFunc(func(context.Context) error {
-		log.Printf("[login] pre-click DOM state: readyState=%q emailInputExists=%v", readyState, emailExists)
+	var curURL, curTitle, bodyText string
+	var shot []byte
+	captureState := chromedp.ActionFunc(func(context.Context) error {
+		log.Printf("[login] pre-click DOM state: readyState=%q emailInputExists=%v url=%q title=%q", readyState, emailExists, curURL, curTitle)
+		snippet := bodyText
+		if len(snippet) > 500 {
+			snippet = snippet[:500]
+		}
+		log.Printf("[login] pre-click body text (first 500 chars): %s", snippet)
+		debugCapture.store(curURL, curTitle, bodyText, shot)
 		return nil
 	})
 
@@ -406,7 +443,11 @@ func browserLogin(ctx context.Context, cfg Config) error {
 		// specifically chromedp's Click/SendKeys command handling.
 		chromedp.Evaluate(`document.readyState`, &readyState),
 		chromedp.Evaluate(`!!document.querySelector('input[name="email"]')`, &emailExists),
-		logDOMState,
+		chromedp.Location(&curURL),
+		chromedp.Title(&curTitle),
+		chromedp.Text("body", &bodyText, chromedp.ByQuery),
+		chromedp.CaptureScreenshot(&shot),
+		captureState,
 		chromedp.Click(`input[name="email"]`, chromedp.ByQuery),
 		mark("email clicked"),
 		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
@@ -570,6 +611,30 @@ func main() {
 		c.Header("X-Landed-URL", curURL)
 		c.Header("X-Landed-Title", curTitle)
 		c.Data(http.StatusOK, "image/png", buf)
+	})
+
+	// TEMPORARY diagnostic route — shows the screenshot/URL/title/body-text
+	// captured from inside the REAL login flow, right before the point
+	// where Click/SendKeys has been hanging. Updated on every /scoring
+	// attempt (success or failure), so hit /scoring first, then this.
+	// Remove once things are stable.
+	r.GET("/debug-last-shot", func(c *gin.Context) {
+		url, title, bodyText, png, capturedAt := debugCapture.load()
+		if len(png) == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no capture yet — call /scoring first"})
+			return
+		}
+		if c.Query("text") == "1" {
+			c.Header("X-Landed-URL", url)
+			c.Header("X-Landed-Title", title)
+			c.Header("X-Captured-At", capturedAt.Format(time.RFC3339))
+			c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(bodyText))
+			return
+		}
+		c.Header("X-Landed-URL", url)
+		c.Header("X-Landed-Title", title)
+		c.Header("X-Captured-At", capturedAt.Format(time.RFC3339))
+		c.Data(http.StatusOK, "image/png", png)
 	})
 
 	r.Use(func(c *gin.Context) {
