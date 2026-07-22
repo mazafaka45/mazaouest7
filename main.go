@@ -358,39 +358,26 @@ func runStep(ctx context.Context, label string, actions ...chromedp.Action) erro
 // session — that transplant proved fragile (cookie attributes don't always
 // survive the trip, so Noest kept showing the login page instead of orders).
 //
-// Each step runs as its own chromedp.Run call (with its own timeout) and
-// returns a distinct error, so that if something hangs/fails we know exactly
-// which step it was — including, when the email field never appears, the
-// URL/title actually reached (helps tell "still loading" from "wrong
-// selector" from "redirected somewhere unexpected").
+// Everything runs inside a SINGLE chromedp.Run call now. Logged timings
+// showed the failure consistently happening well inside each step's own
+// timeout (e.g. "login_fill" cancelled after ~5s of its own 10s budget),
+// with ctxErr=context.Canceled rather than DeadlineExceeded — pointing at
+// something tied to the boundary between separate chromedp.Run calls on a
+// shared remote context, not a plain timeout. Testing whether keeping the
+// whole login flow inside one Run avoids that.
 func browserLogin(ctx context.Context, cfg Config) error {
 	loginURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.LoginPagePath
 
-	// WaitVisible's internal polling turned out to be the actual culprit
-	// (confirmed via /debug-login-shot: the exact same page, with the exact
-	// same selector, renders correctly and quickly with a plain Navigate +
-	// Sleep — WaitVisible was the only thing that never returned). Using
-	// that proven-working approach here instead.
-	if err := runStep(stepCtx(ctx, 15*time.Second), "login_navigate",
+	err := runStep(stepCtx(ctx, 30*time.Second), "login_full_flow",
 		chromedp.Navigate(loginURL),
 		chromedp.Sleep(4*time.Second),
-	); err != nil {
-		return fmt.Errorf("navigate to login page: %w", err)
-	}
-
-	if err := runStep(stepCtx(ctx, 10*time.Second), "login_fill",
 		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="password"]`, cfg.NoestPassword, chromedp.ByQuery),
-	); err != nil {
-		return fmt.Errorf("filling login form: %w", err)
-	}
-
-	if err := runStep(stepCtx(ctx, 15*time.Second), "login_submit", chromedp.Submit(`input[name="password"]`, chromedp.ByQuery)); err != nil {
-		return fmt.Errorf("submitting login form: %w", err)
-	}
-
-	if err := runStep(stepCtx(ctx, 5*time.Second), "login_post_wait", chromedp.Sleep(2500*time.Millisecond)); err != nil {
-		return fmt.Errorf("post-submit wait: %w", err)
+		chromedp.Submit(`input[name="password"]`, chromedp.ByQuery),
+		chromedp.Sleep(2500*time.Millisecond),
+	)
+	if err != nil {
+		return fmt.Errorf("login flow: %w", err)
 	}
 	return nil
 }
@@ -401,15 +388,12 @@ func browserLogin(ctx context.Context, cfg Config) error {
 func readScoringBadge(ctx context.Context, cfg Config, tracking string) (label string, level string, err error) {
 	ordersURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.OrdersPagePath
 
-	if err = runStep(stepCtx(ctx, 15*time.Second), "orders_navigate",
+	if err = runStep(stepCtx(ctx, 20*time.Second), "orders_navigate",
 		chromedp.Navigate(ordersURL),
 		chromedp.Sleep(4*time.Second),
+		chromedp.Sleep(1500*time.Millisecond),
 	); err != nil {
 		return "", "", fmt.Errorf("navigate to orders page: %w", err)
-	}
-
-	if err = runStep(stepCtx(ctx, 5*time.Second), "orders_post_wait", chromedp.Sleep(1500*time.Millisecond)); err != nil {
-		return "", "", fmt.Errorf("post-load wait: %w", err)
 	}
 
 	readCtx := stepCtx(ctx, 10*time.Second)
