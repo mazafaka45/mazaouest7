@@ -341,6 +341,18 @@ func stepCtx(parent context.Context, d time.Duration) context.Context {
 	return ctx
 }
 
+// runStep wraps chromedp.Run with timing/error logging, so Render's logs
+// show exactly how long each step took and whether the failure was a plain
+// deadline (err wraps context.DeadlineExceeded — points to slow/CPU-starved
+// execution) or something that cancelled the context outright (points to a
+// dropped connection or a parent being cancelled elsewhere).
+func runStep(ctx context.Context, label string, actions ...chromedp.Action) error {
+	start := time.Now()
+	err := chromedp.Run(ctx, actions...)
+	log.Printf("[chromedp] step=%s elapsed=%v err=%v ctxErr=%v", label, time.Since(start), err, ctx.Err())
+	return err
+}
+
 // browserLogin logs into Noest directly inside the remote browser (fills the
 // real login form), instead of trying to transplant cookies from the Go HTTP
 // session — that transplant proved fragile (cookie attributes don't always
@@ -359,25 +371,25 @@ func browserLogin(ctx context.Context, cfg Config) error {
 	// same selector, renders correctly and quickly with a plain Navigate +
 	// Sleep — WaitVisible was the only thing that never returned). Using
 	// that proven-working approach here instead.
-	if err := chromedp.Run(stepCtx(ctx, 15*time.Second),
+	if err := runStep(stepCtx(ctx, 15*time.Second), "login_navigate",
 		chromedp.Navigate(loginURL),
 		chromedp.Sleep(4*time.Second),
 	); err != nil {
 		return fmt.Errorf("navigate to login page: %w", err)
 	}
 
-	if err := chromedp.Run(stepCtx(ctx, 10*time.Second),
+	if err := runStep(stepCtx(ctx, 10*time.Second), "login_fill",
 		chromedp.SendKeys(`input[name="email"]`, cfg.NoestEmail, chromedp.ByQuery),
 		chromedp.SendKeys(`input[name="password"]`, cfg.NoestPassword, chromedp.ByQuery),
 	); err != nil {
 		return fmt.Errorf("filling login form: %w", err)
 	}
 
-	if err := chromedp.Run(stepCtx(ctx, 15*time.Second), chromedp.Submit(`input[name="password"]`, chromedp.ByQuery)); err != nil {
+	if err := runStep(stepCtx(ctx, 15*time.Second), "login_submit", chromedp.Submit(`input[name="password"]`, chromedp.ByQuery)); err != nil {
 		return fmt.Errorf("submitting login form: %w", err)
 	}
 
-	if err := chromedp.Run(stepCtx(ctx, 5*time.Second), chromedp.Sleep(2500*time.Millisecond)); err != nil {
+	if err := runStep(stepCtx(ctx, 5*time.Second), "login_post_wait", chromedp.Sleep(2500*time.Millisecond)); err != nil {
 		return fmt.Errorf("post-submit wait: %w", err)
 	}
 	return nil
@@ -389,14 +401,14 @@ func browserLogin(ctx context.Context, cfg Config) error {
 func readScoringBadge(ctx context.Context, cfg Config, tracking string) (label string, level string, err error) {
 	ordersURL := strings.TrimRight(cfg.UpstreamBase, "/") + cfg.OrdersPagePath
 
-	if err = chromedp.Run(stepCtx(ctx, 15*time.Second),
+	if err = runStep(stepCtx(ctx, 15*time.Second), "orders_navigate",
 		chromedp.Navigate(ordersURL),
 		chromedp.Sleep(4*time.Second),
 	); err != nil {
 		return "", "", fmt.Errorf("navigate to orders page: %w", err)
 	}
 
-	if err = chromedp.Run(stepCtx(ctx, 5*time.Second), chromedp.Sleep(1500*time.Millisecond)); err != nil {
+	if err = runStep(stepCtx(ctx, 5*time.Second), "orders_post_wait", chromedp.Sleep(1500*time.Millisecond)); err != nil {
 		return "", "", fmt.Errorf("post-load wait: %w", err)
 	}
 
@@ -404,7 +416,7 @@ func readScoringBadge(ctx context.Context, cfg Config, tracking string) (label s
 
 	// Prefer the badge inside the row that mentions this tracking number.
 	rowSel := fmt.Sprintf(`//tr[.//*[contains(., %q)]]//span[@data-scoring-level]`, tracking)
-	err = chromedp.Run(readCtx,
+	err = runStep(readCtx, "read_badge_by_row",
 		chromedp.AttributeValue(rowSel, "data-scoring-label", &label, nil, chromedp.BySearch),
 	)
 	if err != nil || label == "" {
@@ -614,17 +626,32 @@ func main() {
 		}
 		steps.OrderUpdate = true
 
-		bctx, cancel := newBrowserContext(cfg)
-		defer cancel()
+		var label, level string
+		var scoringErr error
 
-		if err := browserLogin(bctx, cfg); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "browser login failed: " + err.Error(), "step": "scoring", "steps": steps})
-			return
+		// The browser step occasionally fails partway through at a
+		// different point each time (login, orders navigation, etc.) —
+		// the signature of transient instability (limited resources /
+		// flaky local connection), not a logic bug. Retry once from
+		// scratch with a brand new browser connection before giving up.
+		for attempt := 1; attempt <= 2; attempt++ {
+			bctx, cancel := newBrowserContext(cfg)
+
+			if err := browserLogin(bctx, cfg); err != nil {
+				scoringErr = fmt.Errorf("browser login failed: %w", err)
+				cancel()
+				continue
+			}
+
+			label, level, scoringErr = readScoringBadge(bctx, cfg, tracking)
+			cancel()
+			if scoringErr == nil {
+				break
+			}
 		}
 
-		label, level, err := readScoringBadge(bctx, cfg, tracking)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "step": "scoring", "steps": steps})
+		if scoringErr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": scoringErr.Error(), "step": "scoring", "steps": steps})
 			return
 		}
 		steps.Scoring = true
