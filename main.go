@@ -664,6 +664,8 @@ func main() {
 	})
 
 	log.Printf("listening on :%s (upstream=%s)", cfg.Port, cfg.UpstreamBase)
+	RegisterZRRoutes(r)
+
 	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatal(err)
 	}
