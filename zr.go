@@ -182,7 +182,8 @@ func (c *zrClient) setModelPhone(local string) error {
 	if strings.HasSuffix(p.Customer.Phone.Number1, local[1:]) {
 		return nil // déjà le bon numéro
 	}
-	body := map[string]any{"parcelId": p.ID, "name": p.Customer.Name, "phone": local}
+	// ZR exige le format international : 0551234567 → +213551234567
+	body := map[string]any{"parcelId": p.ID, "name": p.Customer.Name, "phone": "+213" + local[1:]}
 	b, st, err := c.publicReq("PATCH", "/parcels/"+p.ID+"/customer", body)
 	if err != nil {
 		return err
