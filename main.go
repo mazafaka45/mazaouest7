@@ -594,6 +594,21 @@ func main() {
 			return
 		}
 
+		// Cache par numéro (?force=1 pour ignorer) — réponse instantanée.
+		if c.Query("force") != "1" {
+			if hit, ok := noestCacheGet(phone); ok {
+				c.JSON(http.StatusOK, gin.H{
+					"phone": phone, "tracking": tracking,
+					"probabilite": extractProbability(hit.Label), "label_complet": hit.Label,
+					"niveau": hit.Level, "cached": true, "steps": steps,
+				})
+				return
+			}
+		}
+		// Un seul colis modèle : une vérification Noest à la fois.
+		noestMu.Lock()
+		defer noestMu.Unlock()
+
 		sess, loginOK, homeOK, err := ensureSession(cfg)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "step": "session", "steps": steps})
@@ -634,6 +649,15 @@ func main() {
 		for attempt := 1; attempt <= 2; attempt++ {
 			bctx, cancel := newBrowserContext(cfg)
 
+			// Chemin rapide (attente active, connexion seulement si nécessaire).
+			if l, lv, ferr := fastScoring(bctx, cfg, tracking); ferr == nil {
+				label, level, scoringErr = l, lv, nil
+				cancel()
+				break
+			} else {
+				log.Printf("[fast] échec, repli sur l'ancien parcours : %v", ferr)
+			}
+
 			if err := browserLogin(bctx, cfg); err != nil {
 				scoringErr = fmt.Errorf("browser login failed: %w", err)
 				cancel()
@@ -652,6 +676,7 @@ func main() {
 			return
 		}
 		steps.Scoring = true
+		noestCacheSet(phone, label, level)
 
 		c.JSON(http.StatusOK, gin.H{
 			"phone":        phone,

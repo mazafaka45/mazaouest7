@@ -5,8 +5,7 @@ WORKDIR /src
 RUN apk add --no-cache git
 
 COPY go.mod ./
-COPY main.go ./
-COPY zr.go ./
+COPY *.go ./
 
 # Pinned chromedp version: "latest" (v0.16.x) requires Go >= 1.26, which isn't
 # released yet, so we pin the last version known to work with Go 1.2x.
